@@ -1,0 +1,142 @@
+################################################################################
+# シークレット (SSM Parameter Store / SecureString は標準パラメータなら無料)
+################################################################################
+
+resource "random_password" "db" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "secret_key_base" {
+  length  = 64
+  special = false
+}
+
+resource "aws_ssm_parameter" "db_password" {
+  name  = "/${var.project}/db_password"
+  type  = "SecureString"
+  value = random_password.db.result
+}
+
+resource "aws_ssm_parameter" "secret_key_base" {
+  name  = "/${var.project}/secret_key_base"
+  type  = "SecureString"
+  value = random_password.secret_key_base.result
+}
+
+################################################################################
+# セキュリティグループ
+################################################################################
+
+# CloudFront (VPC オリジン) からの通信のみ許可
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+resource "aws_security_group" "redmine" {
+  name        = "${var.project}-ec2-sg"
+  description = "Redmine EC2 (HTTP from CloudFront only)"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project}-ec2-sg" }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "redmine_http_from_cloudfront" {
+  security_group_id = aws_security_group.redmine.id
+  description       = "HTTP from CloudFront"
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "redmine_all" {
+  security_group_id = aws_security_group.redmine.id
+  description       = "All outbound (via NAT instance)"
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+################################################################################
+# データボリューム
+# DB と添付ファイルはルートボリュームと分離し、インスタンス再作成時も保持する
+################################################################################
+
+resource "aws_ebs_volume" "data" {
+  availability_zone = local.az
+  size              = var.data_volume_size
+  type              = "gp3"
+  encrypted         = true
+
+  tags = {
+    Name   = "${var.project}-data"
+    Backup = "${var.project}-daily"
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_volume_attachment" "data" {
+  device_name = "/dev/sdf"
+  volume_id   = aws_ebs_volume.data.id
+  instance_id = aws_instance.redmine.id
+}
+
+################################################################################
+# Redmine EC2
+################################################################################
+
+locals {
+  # DB ダンプはスナップショット取得の 30 分前に実行する
+  backup_minutes      = tonumber(split(":", var.backup_time_utc)[0]) * 60 + tonumber(split(":", var.backup_time_utc)[1])
+  dump_minutes        = (local.backup_minutes + 1440 - 30) % 1440
+  dump_calendar_utc   = format("*-*-* %02d:%02d:00 UTC", floor(local.dump_minutes / 60), local.dump_minutes % 60)
+  data_volume_devname = "nvme-Amazon_Elastic_Block_Store_${replace(aws_ebs_volume.data.id, "-", "")}"
+}
+
+resource "aws_instance" "redmine" {
+  ami                    = data.aws_ssm_parameter.al2023_arm64.value
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.private.id
+  vpc_security_group_ids = [aws_security_group.redmine.id]
+  iam_instance_profile   = aws_iam_instance_profile.redmine.name
+
+  user_data = templatefile("${path.module}/templates/redmine_user_data.sh.tftpl", {
+    region                 = var.region
+    data_volume_devname    = local.data_volume_devname
+    db_password_param      = aws_ssm_parameter.db_password.name
+    secret_key_base_param  = aws_ssm_parameter.secret_key_base.name
+    redmine_image          = var.redmine_image
+    postgres_image         = var.postgres_image
+    nginx_image            = var.nginx_image
+    docker_compose_version = var.docker_compose_version
+    upload_max_size_mb     = var.upload_max_size_mb
+    dump_calendar_utc      = local.dump_calendar_utc
+  })
+  user_data_replace_on_change = false
+
+  metadata_options {
+    http_tokens = "required"
+  }
+
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = var.root_volume_size
+    encrypted   = true
+  }
+
+  lifecycle {
+    # AMI 更新やスクリプト変更で意図せずインスタンスが再作成されないようにする
+    ignore_changes = [ami, user_data]
+  }
+
+  # NAT 経由でパッケージ / イメージを取得するため NAT を先に作成
+  depends_on = [
+    aws_route_table_association.private,
+    aws_instance.nat,
+  ]
+
+  tags = { Name = "${var.project}-ec2" }
+}

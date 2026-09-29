@@ -1,0 +1,33 @@
+// 許可された IPv4 CIDR 以外からのアクセスを 403 で拒否する
+var ALLOWED = ${allowed_cidrs};
+
+function ipToInt(ip) {
+  var p = ip.split('.');
+  if (p.length !== 4) return null;
+  return ((parseInt(p[0], 10) << 24) >>> 0) + (parseInt(p[1], 10) << 16) + (parseInt(p[2], 10) << 8) + parseInt(p[3], 10);
+}
+
+function inCidr(ipInt, cidr) {
+  var parts = cidr.split('/');
+  var base = ipToInt(parts[0]);
+  var bits = parseInt(parts[1], 10);
+  var mask = bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
+  return ((ipInt & mask) >>> 0) === ((base & mask) >>> 0);
+}
+
+function handler(event) {
+  var ipInt = ipToInt(event.viewer.ip);
+  if (ipInt !== null) {
+    for (var i = 0; i < ALLOWED.length; i++) {
+      if (inCidr(ipInt, ALLOWED[i])) {
+        return event.request;
+      }
+    }
+  }
+  return {
+    statusCode: 403,
+    statusDescription: 'Forbidden',
+    headers: { 'content-type': { value: 'text/plain' } },
+    body: 'Forbidden'
+  };
+}
