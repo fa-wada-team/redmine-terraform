@@ -153,3 +153,19 @@ variable "schedule_stop_cron" {
   type        = string
   default     = "cron(0 21 ? * MON-FRI *)"
 }
+
+################################################################################
+# インターフェイス VPC エンドポイントの自動作成 / 削除
+################################################################################
+
+variable "endpoint_ttl_minutes" {
+  description = "自動作成したインターフェイスエンドポイントを削除するまでの時間 (分)"
+  type        = number
+  default     = 60
+}
+
+variable "endpoint_cleanup_rate" {
+  description = "期限切れエンドポイントの削除チェック間隔 (EventBridge Scheduler の rate 式)"
+  type        = string
+  default     = "rate(10 minutes)"
+}

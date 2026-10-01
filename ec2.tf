@@ -166,7 +166,9 @@ resource "aws_instance" "redmine" {
   depends_on = [
     aws_route_table_association.private,
     aws_vpc_endpoint.s3,
-    aws_vpc_endpoint.interface,
+    # 起動イベントでエンドポイントを作成するため、EventBridge / Lambda を先に用意する
+    aws_cloudwatch_event_target.endpoint_on_launch,
+    aws_lambda_permission.eventbridge,
     aws_vpc_security_group_egress_rule.redmine_to_vpce,
     aws_vpc_security_group_egress_rule.redmine_to_s3,
     aws_vpc_security_group_ingress_rule.vpc_endpoint_https,
@@ -174,5 +176,9 @@ resource "aws_instance" "redmine" {
     aws_s3_object.docker_compose,
   ]
 
-  tags = { Name = "${var.project}-ec2" }
+  tags = {
+    Name = "${var.project}-ec2"
+    # エンドポイント管理 Lambda が新規起動を検知する対象
+    (local.endpoint_instance_tag_key) = var.project
+  }
 }

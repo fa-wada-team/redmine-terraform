@@ -11,6 +11,10 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.6.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = ">= 2.4.0"
+    }
   }
 
   # 複数人で運用する場合は S3 バックエンドの利用を推奨

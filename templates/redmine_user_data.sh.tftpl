@@ -14,6 +14,7 @@ DATA_DIR=/data
 #  - Docker Compose : S3 ゲートウェイエンドポイント
 #  - Docker イメージ : ECR (プルスルーキャッシュ) インターフェイスエンドポイント
 #  - シークレット    : SSM インターフェイスエンドポイント
+# インターフェイスエンドポイントは常設せず、EC2 の新規起動を検知した Lambda が作成する
 dnf install -y docker amazon-ecr-credential-helper
 systemctl enable --now docker
 
@@ -64,18 +65,44 @@ mount -a
 mkdir -p "$DATA_DIR"/{postgres,redmine/files,redmine/plugins}
 
 ################################################################################
-# シークレット
+# インターフェイスエンドポイントの準備完了を待つ
+# (Lambda が起動イベントを受けて作成するまで 2〜5 分程度かかる)
+################################################################################
+wait_for() {
+  local name=$1
+  shift
+  for i in $(seq 1 90); do
+    if "$@" >/dev/null 2>&1; then
+      echo "$name endpoint is ready"
+      return 0
+    fi
+    echo "waiting for $name endpoint... ($i)"
+    sleep 10
+  done
+  echo "$name endpoint is not available" >&2
+  return 1
+}
+
+wait_for ssm aws ssm get-parameter --region "${region}" --cli-connect-timeout 5 \
+  --name "${db_password_param}" --with-decryption
+wait_for ecr aws ecr get-authorization-token --region "${region}" --cli-connect-timeout 5
+
+################################################################################
+# シークレット (以降は .env を参照するため、再起動時に Parameter Store は不要)
 ################################################################################
 get_param() {
   aws ssm get-parameter --region "${region}" --with-decryption \
     --name "$1" --query Parameter.Value --output text
 }
 
+DB_PASSWORD=$(get_param "${db_password_param}")
+SECRET_KEY_BASE=$(get_param "${secret_key_base_param}")
+
 mkdir -p "$APP_DIR"
 umask 077
 cat > "$APP_DIR/.env" <<ENV
-DB_PASSWORD=$(get_param "${db_password_param}")
-SECRET_KEY_BASE=$(get_param "${secret_key_base_param}")
+DB_PASSWORD=$DB_PASSWORD
+SECRET_KEY_BASE=$SECRET_KEY_BASE
 ENV
 umask 022
 
@@ -156,7 +183,12 @@ server {
 NGINX
 
 cd "$APP_DIR"
-docker compose pull
+# イメージはここで EC2 に保存されるため、以降の再起動ではエンドポイント不要
+for i in $(seq 1 10); do
+  docker compose pull && break
+  echo "retrying docker compose pull... ($i)"
+  sleep 15
+done
 docker compose up -d
 
 ################################################################################

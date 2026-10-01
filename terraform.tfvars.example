@@ -12,3 +12,6 @@ data_volume_size = 20
 
 # 平日 8:00-21:00 のみ稼働させてコスト削減する場合
 # enable_schedule = true
+
+# インターフェイスエンドポイントを自動削除するまでの時間 (分)
+# endpoint_ttl_minutes = 60

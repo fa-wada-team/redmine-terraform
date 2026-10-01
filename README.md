@@ -19,17 +19,22 @@ CloudFront
 │    └ データ用 EBS (/data: DB・添付ファイル)          │
 │        │ アウトバウンドは VPC エンドポイントのみ     │
 │        ├ S3 ゲートウェイ   … dnf / Docker Compose    │
-│        ├ ecr.api / ecr.dkr … Docker イメージ         │
-│        └ ssm               … Parameter Store         │
+│        ├ ecr.api / ecr.dkr … Docker イメージ  ※     │
+│        └ ssm               … Parameter Store  ※     │
 │                                                      │
 │   EC2 Instance Connect エンドポイント ← 管理者の SSH │
 └──────────────────────────────────────────────────────┘
+ ※ インターフェイスエンドポイントは必要なときだけ Lambda が自動作成・自動削除
+
+EventBridge (EC2 新規起動)  ──▶ Lambda ──▶ エンドポイント作成 (期限タグ付き)
+EventBridge Scheduler (10分毎) ─▶ Lambda ──▶ 期限切れエンドポイントを削除
 ```
 
 | 項目 | 採用 | 理由 |
 | --- | --- | --- |
 | CloudFront → EC2 接続 | **CloudFront VPC オリジン** | ALB 不要 (約 $20/月 削減)。EC2 にパブリック IP・公開ポート不要 |
 | 外向き通信 | **VPC エンドポイントのみ (NAT なし)** | インターネットへの経路を持たず、AWS サービスとだけ通信する |
+| インターフェイスエンドポイント | **Lambda で必要なときだけ作成し、期限で自動削除** | 常設すると 3 個で約 $31/月。初回構築・作り直し・バージョンアップ時だけ使う |
 | Docker イメージ | **ECR プルスルーキャッシュ (上流: ECR Public)** | Docker Hub 公式イメージのミラー (`public.ecr.aws/docker/library/*`) を自アカウントの ECR 経由で取得。認証情報不要 |
 | Docker Compose | **S3 に配置** | `apply` 実行端末で GitHub から取得・SHA256 検証し、S3 にアップロード |
 | DB | **EC2 上の PostgreSQL (Docker)** | RDS (最小でも約 $15〜/月) を省略 |
@@ -53,16 +58,15 @@ CloudFront
 | リソース | 金額 (USD) |
 | --- | --- |
 | EC2 t4g.small (24h 稼働) | 約 15.8 |
-| インターフェイス VPC エンドポイント × 3 (ssm / ecr.api / ecr.dkr) | 約 30.7 |
 | EBS gp3 30GB (root 10 + data 20) | 約 2.9 |
+| インターフェイス VPC エンドポイント × 3 (作成している間だけ課金: 1 時間あたり約 $0.04) | 約 0〜0.2 |
 | S3 ゲートウェイエンドポイント / EC2 Instance Connect エンドポイント | 0 |
+| Lambda / EventBridge / CloudWatch Logs (無料枠内) | 約 0 |
 | ECR (キャッシュしたイメージ約 1GB) / S3 (Docker Compose) | 約 0.1 |
 | CloudFront (無料枠: 1TB 転送 / 1,000 万リクエスト) | 約 0 |
-| **合計** | **約 50** |
+| **合計** | **約 19** |
 
-- インターフェイスエンドポイントは 1 個あたり約 $10/月 (24 時間課金) かかります。
-- `enable_schedule = true` (平日 8:00〜21:00 のみ稼働) にすると EC2 分が約 6 割減り、**約 $40/月** 程度になります
-  (エンドポイントは停止できないため削減対象外)。
+- `enable_schedule = true` (平日 8:00〜21:00 のみ稼働) にすると EC2 分が約 6 割減り、**約 $9/月** 程度になります。
 - 24 時間稼働させる場合は Compute Savings Plans (1 年) でさらに約 3 割削減できます。
 
 ## 前提
@@ -81,7 +85,9 @@ terraform apply
 ```
 
 CloudFront VPC オリジンの作成に 10〜15 分程度かかります。
-`apply` 完了後、EC2 の初期化 (Docker イメージ取得・DB 初期化) に 5 分程度かかります。
+`apply` 完了後、EC2 の初期化に 10 分程度かかります
+(起動を検知した Lambda がエンドポイントを作成 → 利用可能になるのを待って Docker イメージ取得・DB 初期化)。
+エンドポイントは `endpoint_ttl_minutes` (既定 60 分) 経過後に自動で削除されます。
 
 ```bash
 terraform output redmine_url
@@ -107,21 +113,45 @@ docker compose ps
 docker compose logs -f redmine
 ```
 
-初期化ログは `/var/log/redmine-setup.log` にあります。
+初期化ログは `/var/log/redmine-setup.log`、エンドポイント管理 Lambda のログは
+CloudWatch Logs の `/aws/lambda/<project>-endpoint-manager` にあります。
 
 ログインする IAM ユーザー / ロールには `ec2-instance-connect:OpenTunnel` と
 `ec2-instance-connect:SendSSHPublicKey` の権限が必要です。
 
+### インターフェイスエンドポイントの作成 / 削除
+
+| タイミング | 作成 | 削除 |
+| --- | --- | --- |
+| 初回構築 / EC2 の作り直し | 自動 (EC2 の新規起動を EventBridge が検知) | 自動 (期限切れ後、10 分以内) |
+| バージョンアップなどの作業 | 手動 (下記コマンド) | 自動 (期限切れ後) または手動 |
+| EC2 の停止 → 起動 (日次スケジュール等) | 作成しない | — |
+| `terraform destroy` | — | 自動 (Lambda が全削除してから VPC を削除) |
+
+```bash
+# 作成 (ttl_minutes 経過後に自動削除。作成済みなら期限を延長)
+$(terraform output -raw endpoint_create_command)
+# 状態確認
+$(terraform output -raw endpoint_status_command)
+# 作業が早く終わったら手動で削除
+$(terraform output -raw endpoint_delete_command)
+```
+
+エンドポイントがない間も、Redmine の稼働・再起動・dnf のセキュリティ更新 (S3 ゲートウェイ経由)・
+EC2 Instance Connect でのログインはすべて利用できます。
+
 ### Redmine のバージョンアップ
 
-`/opt/redmine/compose.yml` のイメージタグ (例: `.../docker/library/redmine:6.0` → `:6.1`) を変更して、以下を実行します。
-イメージは ECR プルスルーキャッシュ経由で取得されます (インターネット接続は不要)。
-(`user_data` の変更はインスタンス再作成を避けるため無視する設定にしています)
+1. エンドポイントを作成し、`status` で 3 つとも `available` になるまで待つ (2〜5 分)
+2. `/opt/redmine/compose.yml` のイメージタグ (例: `.../docker/library/redmine:6.0` → `:6.1`) を変更して、以下を実行
 
 ```bash
 cd /opt/redmine
 docker compose pull && docker compose up -d
 ```
+
+イメージは ECR プルスルーキャッシュ経由で取得されます (インターネット接続は不要)。
+(`user_data` の変更はインスタンス再作成を避けるため無視する設定にしています)
 
 ### プラグイン
 
@@ -155,7 +185,8 @@ DB と添付ファイルはデータ用 EBS (`/data`) に保存しており、EC
 
 | ファイル | 内容 |
 | --- | --- |
-| `network.tf` | VPC / サブネット / VPC エンドポイント / EC2 Instance Connect エンドポイント |
+| `network.tf` | VPC / サブネット / S3 ゲートウェイエンドポイント / EC2 Instance Connect エンドポイント |
+| `endpoints.tf` | インターフェイスエンドポイントを自動作成・削除する Lambda / EventBridge |
 | `artifacts.tf` | ECR プルスルーキャッシュ / Docker Compose 配置用 S3 バケット |
 | `ec2.tf` | Redmine EC2 / データ用 EBS / セキュリティグループ / シークレット |
 | `iam.tf` | EC2 用 IAM ロール |
@@ -163,3 +194,4 @@ DB と添付ファイルはデータ用 EBS (`/data`) に保存しており、EC
 | `scheduler.tf` | 稼働スケジュール (任意) |
 | `templates/` | EC2 の user_data |
 | `scripts/` | Docker Compose 取得スクリプト (`apply` 時に実行) |
+| `lambda/` | エンドポイント管理 Lambda のコード |

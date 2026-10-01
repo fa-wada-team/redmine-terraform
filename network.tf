@@ -68,12 +68,12 @@ resource "aws_vpc_endpoint" "s3" {
   tags = { Name = "${var.project}-s3-endpoint" }
 }
 
-# インターフェイスエンドポイント
+# インターフェイスエンドポイント (endpoints.tf の Lambda が必要なときだけ作成・削除する)
 #  - ssm     : Parameter Store からのパスワード読み取り
 #  - ecr.api : ECR 認証 / プルスルーキャッシュ
 #  - ecr.dkr : Docker イメージの取得
 locals {
-  interface_endpoints = toset(["ssm", "ecr.api", "ecr.dkr"])
+  interface_endpoints = ["ssm", "ecr.api", "ecr.dkr"]
 }
 
 resource "aws_security_group" "vpc_endpoint" {
@@ -91,19 +91,6 @@ resource "aws_vpc_security_group_ingress_rule" "vpc_endpoint_https" {
   from_port                    = 443
   to_port                      = 443
   ip_protocol                  = "tcp"
-}
-
-resource "aws_vpc_endpoint" "interface" {
-  for_each = local.interface_endpoints
-
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${var.region}.${each.key}"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = [aws_subnet.private.id]
-  security_group_ids  = [aws_security_group.vpc_endpoint.id]
-  private_dns_enabled = true
-
-  tags = { Name = "${var.project}-${replace(each.key, ".", "-")}-endpoint" }
 }
 
 ################################################################################
