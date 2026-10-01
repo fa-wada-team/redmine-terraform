@@ -33,8 +33,13 @@ CloudFront
 | シークレット | **SSM Parameter Store (SecureString)** | 標準パラメータは無料 |
 | TLS | **CloudFront のデフォルト証明書 / ACM** | 証明書は無料 |
 
-EC2 のセキュリティグループは CloudFront のマネージドプレフィックスリスト
-(`com.amazonaws.global.cloudfront.origin-facing`) からの 80 番のみ許可しています。
+### EC2 への直接アクセスの遮断
+
+- EC2 はプライベートサブネットに配置し、パブリック IP は付与しません (インターネットから到達不可)。
+- EC2 のセキュリティグループは、CloudFront VPC オリジン作成時に CloudFront が自動作成する
+  セキュリティグループ `CloudFront-VPCOrigins-Service-SG` からの 80 番のみ許可します。
+  VPC 内の他リソース (NAT インスタンス等) からも直接アクセスできません。
+- SSH (22 番) は開けず、管理は SSM Session Manager で行います。
 
 ## 概算コスト (東京リージョン / 月額)
 

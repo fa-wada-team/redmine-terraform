@@ -28,26 +28,36 @@ resource "aws_ssm_parameter" "secret_key_base" {
 # セキュリティグループ
 ################################################################################
 
-# CloudFront (VPC オリジン) からの通信のみ許可
-data "aws_ec2_managed_prefix_list" "cloudfront" {
-  name = "com.amazonaws.global.cloudfront.origin-facing"
+# CloudFront VPC オリジンを作成すると、CloudFront が VPC 内に ENI と
+# セキュリティグループ "CloudFront-VPCOrigins-Service-SG" を自動作成する。
+# EC2 への通信はその ENI (プライベート IP) から届くため、このセキュリティグループからの
+# 通信のみを許可し、それ以外 (VPC 内の他リソースを含む) からの直接アクセスは拒否する。
+data "aws_security_group" "cloudfront_vpc_origin" {
+  vpc_id = aws_vpc.main.id
+
+  filter {
+    name   = "group-name"
+    values = ["CloudFront-VPCOrigins-Service-SG"]
+  }
+
+  depends_on = [aws_cloudfront_vpc_origin.redmine]
 }
 
 resource "aws_security_group" "redmine" {
   name        = "${var.project}-ec2-sg"
-  description = "Redmine EC2 (HTTP from CloudFront only)"
+  description = "Redmine EC2 (HTTP from CloudFront VPC origin only)"
   vpc_id      = aws_vpc.main.id
 
   tags = { Name = "${var.project}-ec2-sg" }
 }
 
 resource "aws_vpc_security_group_ingress_rule" "redmine_http_from_cloudfront" {
-  security_group_id = aws_security_group.redmine.id
-  description       = "HTTP from CloudFront"
-  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
-  from_port         = 80
-  to_port           = 80
-  ip_protocol       = "tcp"
+  security_group_id            = aws_security_group.redmine.id
+  description                  = "HTTP from CloudFront VPC origin"
+  referenced_security_group_id = data.aws_security_group.cloudfront_vpc_origin.id
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
 }
 
 resource "aws_vpc_security_group_egress_rule" "redmine_all" {
@@ -90,11 +100,13 @@ locals {
 }
 
 resource "aws_instance" "redmine" {
-  ami                    = data.aws_ssm_parameter.al2023_arm64.value
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.private.id
-  vpc_security_group_ids = [aws_security_group.redmine.id]
-  iam_instance_profile   = aws_iam_instance_profile.redmine.name
+  ami           = data.aws_ssm_parameter.al2023_arm64.value
+  instance_type = var.instance_type
+  subnet_id     = aws_subnet.private.id
+  # パブリック IP を付与せず、インターネットから直接到達できないようにする
+  associate_public_ip_address = false
+  vpc_security_group_ids      = [aws_security_group.redmine.id]
+  iam_instance_profile        = aws_iam_instance_profile.redmine.name
 
   user_data = templatefile("${path.module}/templates/redmine_user_data.sh.tftpl", {
     region                 = var.region
