@@ -9,16 +9,11 @@ output "cloudfront_domain_name" {
 }
 
 output "redmine_instance_id" {
-  description = "Redmine EC2 のインスタンス ID (SSM Session Manager 接続用)"
+  description = "Redmine EC2 のインスタンス ID"
   value       = aws_instance.redmine.id
 }
 
-output "nat_instance_id" {
-  description = "NAT インスタンスの ID"
-  value       = aws_instance.nat.id
-}
-
-output "ssm_session_command" {
-  description = "Redmine EC2 へのログインコマンド"
-  value       = "aws ssm start-session --region ${var.region} --target ${aws_instance.redmine.id}"
+output "ssh_command" {
+  description = "Redmine EC2 へのログインコマンド (EC2 Instance Connect エンドポイント経由)"
+  value       = "aws ec2-instance-connect ssh --region ${var.region} --instance-id ${aws_instance.redmine.id} --os-user ec2-user --connection-type eice"
 }

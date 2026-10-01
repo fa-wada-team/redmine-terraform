@@ -10,26 +10,7 @@ data "aws_iam_policy_document" "ec2_assume" {
 }
 
 ################################################################################
-# NAT インスタンス用 (SSM Session Manager のみ)
-################################################################################
-
-resource "aws_iam_role" "ssm" {
-  name               = "${var.project}-nat-role"
-  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
-}
-
-resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.ssm.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_instance_profile" "ssm" {
-  name = "${var.project}-nat-profile"
-  role = aws_iam_role.ssm.name
-}
-
-################################################################################
-# Redmine EC2 用 (SSM Session Manager + シークレット読み取り)
+# Redmine EC2 用 (シークレット読み取り / ECR からのイメージ取得 / S3 から Docker Compose 取得)
 ################################################################################
 
 resource "aws_iam_role" "redmine" {
@@ -37,12 +18,7 @@ resource "aws_iam_role" "redmine" {
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
-resource "aws_iam_role_policy_attachment" "redmine_ssm_core" {
-  role       = aws_iam_role.redmine.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-data "aws_iam_policy_document" "redmine_params" {
+data "aws_iam_policy_document" "redmine" {
   statement {
     actions = ["ssm:GetParameter", "ssm:GetParameters"]
     resources = [
@@ -50,12 +26,36 @@ data "aws_iam_policy_document" "redmine_params" {
       aws_ssm_parameter.secret_key_base.arn,
     ]
   }
+
+  statement {
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  # プルスルーキャッシュ: 初回取得時にリポジトリ作成とアップストリームからの取り込みが必要
+  statement {
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchImportUpstreamImage",
+      "ecr:CreateRepository",
+    ]
+    resources = [
+      "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/${aws_ecr_pull_through_cache_rule.ecr_public.ecr_repository_prefix}/*",
+    ]
+  }
+
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/${local.docker_compose_s3_key}"]
+  }
 }
 
-resource "aws_iam_role_policy" "redmine_params" {
-  name   = "read-redmine-secrets"
+resource "aws_iam_role_policy" "redmine" {
+  name   = "redmine-ec2"
   role   = aws_iam_role.redmine.id
-  policy = data.aws_iam_policy_document.redmine_params.json
+  policy = data.aws_iam_policy_document.redmine.json
 }
 
 resource "aws_iam_instance_profile" "redmine" {

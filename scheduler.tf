@@ -28,7 +28,7 @@ data "aws_iam_policy_document" "scheduler" {
 
   statement {
     actions   = ["ec2:StartInstances", "ec2:StopInstances"]
-    resources = [aws_instance.redmine.arn, aws_instance.nat.arn]
+    resources = [aws_instance.redmine.arn]
   }
 }
 
@@ -55,7 +55,7 @@ resource "aws_scheduler_schedule" "start" {
     arn      = "arn:aws:scheduler:::aws-sdk:ec2:startInstances"
     role_arn = aws_iam_role.scheduler[0].arn
     input = jsonencode({
-      InstanceIds = [aws_instance.nat.id, aws_instance.redmine.id]
+      InstanceIds = [aws_instance.redmine.id]
     })
   }
 }
@@ -75,7 +75,7 @@ resource "aws_scheduler_schedule" "stop" {
     arn      = "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
     role_arn = aws_iam_role.scheduler[0].arn
     input = jsonencode({
-      InstanceIds = [aws_instance.redmine.id, aws_instance.nat.id]
+      InstanceIds = [aws_instance.redmine.id]
     })
   }
 }

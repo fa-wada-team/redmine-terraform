@@ -9,13 +9,23 @@ DATA_DIR=/data
 ################################################################################
 # パッケージ
 ################################################################################
-dnf install -y docker
+# インターネットへの経路はなく、以下はすべて VPC エンドポイント経由
+#  - dnf            : S3 ゲートウェイエンドポイント
+#  - Docker Compose : S3 ゲートウェイエンドポイント
+#  - Docker イメージ : ECR (プルスルーキャッシュ) インターフェイスエンドポイント
+#  - シークレット    : SSM インターフェイスエンドポイント
+dnf install -y docker amazon-ecr-credential-helper
 systemctl enable --now docker
 
 mkdir -p /usr/local/lib/docker/cli-plugins
-curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
-  "https://github.com/docker/compose/releases/download/${docker_compose_version}/docker-compose-linux-aarch64"
+aws s3 cp --region "${region}" "${docker_compose_s3_uri}" /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# ECR の認証は credential helper が自動で行う (トークン期限切れの心配なし)
+mkdir -p /root/.docker
+cat > /root/.docker/config.json <<'JSON'
+{ "credHelpers": { "${ecr_registry}": "ecr-login" } }
+JSON
 
 ################################################################################
 # スワップ (メモリ 2GB 環境での OOM 対策)

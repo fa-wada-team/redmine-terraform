@@ -11,25 +11,30 @@ Redmine を AWS に構築する Terraform です。利用者 10 人以下・低�
 CloudFront
    │  HTTP (CloudFront VPC オリジン / AWS 内部ネットワーク)
    ▼
-┌──────────────────── VPC ────────────────────┐
-│  Private Subnet                              │
-│   EC2 (t4g.small / Amazon Linux 2023)        │
-│    └ docker compose                          │
-│        nginx :80 → Redmine :3000 → PostgreSQL│
-│    └ データ用 EBS (/data: DB・添付ファイル)  │
-│                  │ アウトバウンドのみ        │
-│  Public Subnet   ▼                           │
-│   NAT インスタンス (t4g.nano) → IGW          │
-└──────────────────────────────────────────────┘
+┌──────────────────────── VPC ────────────────────────┐
+│  Private Subnet (インターネットへの経路なし)          │
+│   EC2 (t4g.small / Amazon Linux 2023)                │
+│    └ docker compose                                  │
+│        nginx :80 → Redmine :3000 → PostgreSQL        │
+│    └ データ用 EBS (/data: DB・添付ファイル)          │
+│        │ アウトバウンドは VPC エンドポイントのみ     │
+│        ├ S3 ゲートウェイ   … dnf / Docker Compose    │
+│        ├ ecr.api / ecr.dkr … Docker イメージ         │
+│        └ ssm               … Parameter Store         │
+│                                                      │
+│   EC2 Instance Connect エンドポイント ← 管理者の SSH │
+└──────────────────────────────────────────────────────┘
 ```
 
 | 項目 | 採用 | 理由 |
 | --- | --- | --- |
 | CloudFront → EC2 接続 | **CloudFront VPC オリジン** | ALB 不要 (約 $20/月 削減)。EC2 にパブリック IP・公開ポート不要 |
-| 外向き通信 | **NAT インスタンス (t4g.nano)** | NAT Gateway (約 $45/月) の 1/10 以下 |
+| 外向き通信 | **VPC エンドポイントのみ (NAT なし)** | インターネットへの経路を持たず、AWS サービスとだけ通信する |
+| Docker イメージ | **ECR プルスルーキャッシュ (上流: ECR Public)** | Docker Hub 公式イメージのミラー (`public.ecr.aws/docker/library/*`) を自アカウントの ECR 経由で取得。認証情報不要 |
+| Docker Compose | **S3 に配置** | `apply` 実行端末で GitHub から取得・SHA256 検証し、S3 にアップロード |
 | DB | **EC2 上の PostgreSQL (Docker)** | RDS (最小でも約 $15〜/月) を省略 |
 | CPU アーキテクチャ | **Graviton (arm64)** | 同性能の x86 より約 20% 安い |
-| 管理アクセス | **SSM Session Manager** | SSH 鍵・踏み台不要。22 番ポートは開けない |
+| 管理アクセス | **EC2 Instance Connect エンドポイント** | 無料。踏み台・パブリック IP 不要。SSH 鍵は接続時に一時的に送り込むため管理不要 |
 | シークレット | **SSM Parameter Store (SecureString)** | 標準パラメータは無料 |
 | TLS | **CloudFront のデフォルト証明書 / ACM** | 証明書は無料 |
 
@@ -38,28 +43,34 @@ CloudFront
 - EC2 はプライベートサブネットに配置し、パブリック IP は付与しません (インターネットから到達不可)。
 - EC2 のセキュリティグループは、CloudFront VPC オリジン作成時に CloudFront が自動作成する
   セキュリティグループ `CloudFront-VPCOrigins-Service-SG` からの 80 番のみ許可します。
-  VPC 内の他リソース (NAT インスタンス等) からも直接アクセスできません。
-- SSH (22 番) は開けず、管理は SSM Session Manager で行います。
+  VPC 内の他リソースからも直接アクセスできません。
+- SSH (22 番) は EC2 Instance Connect エンドポイントのセキュリティグループからのみ許可します。
+  エンドポイントの利用には IAM 認証 (`ec2-instance-connect:OpenTunnel`) が必要です。
+- EC2 のアウトバウンドは VPC エンドポイント宛ての HTTPS (443) のみ許可しています。
 
 ## 概算コスト (東京リージョン / 月額)
 
 | リソース | 金額 (USD) |
 | --- | --- |
 | EC2 t4g.small (24h 稼働) | 約 15.8 |
-| NAT インスタンス t4g.nano | 約 3.9 |
-| パブリック IPv4 (NAT 用 1 個) | 約 3.6 |
-| EBS gp3 38GB (root 10 + data 20 + NAT 8) | 約 3.6 |
+| インターフェイス VPC エンドポイント × 3 (ssm / ecr.api / ecr.dkr) | 約 30.7 |
+| EBS gp3 30GB (root 10 + data 20) | 約 2.9 |
+| S3 ゲートウェイエンドポイント / EC2 Instance Connect エンドポイント | 0 |
+| ECR (キャッシュしたイメージ約 1GB) / S3 (Docker Compose) | 約 0.1 |
 | CloudFront (無料枠: 1TB 転送 / 1,000 万リクエスト) | 約 0 |
-| **合計** | **約 27** |
+| **合計** | **約 50** |
 
-- `enable_schedule = true` (平日 8:00〜21:00 のみ稼働) にすると EC2 分が約 6 割減り、**約 $17/月** 程度になります。
+- インターフェイスエンドポイントは 1 個あたり約 $10/月 (24 時間課金) かかります。
+- `enable_schedule = true` (平日 8:00〜21:00 のみ稼働) にすると EC2 分が約 6 割減り、**約 $40/月** 程度になります
+  (エンドポイントは停止できないため削減対象外)。
 - 24 時間稼働させる場合は Compute Savings Plans (1 年) でさらに約 3 割削減できます。
 
 ## 前提
 
 - Terraform >= 1.6
 - AWS 認証情報 (AdministratorAccess 相当)
-- (SSM でログインする場合) AWS CLI と Session Manager プラグイン
+- `bash` / `curl` / `sha256sum` (または `shasum`) — `apply` 時に Docker Compose を GitHub から取得するため
+- (EC2 にログインする場合) AWS CLI v2
 
 ## デプロイ
 
@@ -89,7 +100,7 @@ terraform output redmine_url
 ### サーバーへのログイン
 
 ```bash
-$(terraform output -raw ssm_session_command)
+$(terraform output -raw ssh_command)
 sudo -i
 cd /opt/redmine
 docker compose ps
@@ -98,9 +109,13 @@ docker compose logs -f redmine
 
 初期化ログは `/var/log/redmine-setup.log` にあります。
 
+ログインする IAM ユーザー / ロールには `ec2-instance-connect:OpenTunnel` と
+`ec2-instance-connect:SendSSHPublicKey` の権限が必要です。
+
 ### Redmine のバージョンアップ
 
-`/opt/redmine/compose.yml` のイメージタグを変更して、以下を実行します。
+`/opt/redmine/compose.yml` のイメージタグ (例: `.../docker/library/redmine:6.0` → `:6.1`) を変更して、以下を実行します。
+イメージは ECR プルスルーキャッシュ経由で取得されます (インターネット接続は不要)。
 (`user_data` の変更はインスタンス再作成を避けるため無視する設定にしています)
 
 ```bash
@@ -111,6 +126,8 @@ docker compose pull && docker compose up -d
 ### プラグイン
 
 `/data/redmine/plugins` に配置し、`docker compose restart redmine` を実行します。
+EC2 はインターネットに出られないため、プラグインは手元でダウンロードして `scp` 等で転送してください。
+追加の gem が必要なプラグインは、そのままではインストールできません (カスタムイメージを ECR に push する等の対応が必要です)。
 
 ### データの保持
 
@@ -138,10 +155,11 @@ DB と添付ファイルはデータ用 EBS (`/data`) に保存しており、EC
 
 | ファイル | 内容 |
 | --- | --- |
-| `network.tf` | VPC / サブネット / ルートテーブル / S3 ゲートウェイエンドポイント |
-| `nat.tf` | NAT インスタンス |
+| `network.tf` | VPC / サブネット / VPC エンドポイント / EC2 Instance Connect エンドポイント |
+| `artifacts.tf` | ECR プルスルーキャッシュ / Docker Compose 配置用 S3 バケット |
 | `ec2.tf` | Redmine EC2 / データ用 EBS / セキュリティグループ / シークレット |
 | `iam.tf` | EC2 用 IAM ロール |
 | `cloudfront.tf` | CloudFront ディストリビューション / VPC オリジン |
 | `scheduler.tf` | 稼働スケジュール (任意) |
 | `templates/` | EC2 の user_data |
+| `scripts/` | Docker Compose 取得スクリプト (`apply` 時に実行) |

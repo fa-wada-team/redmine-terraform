@@ -30,12 +30,6 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
-variable "public_subnet_cidr" {
-  description = "パブリックサブネット (NAT インスタンス用) の CIDR"
-  type        = string
-  default     = "10.0.0.0/24"
-}
-
 variable "private_subnet_cidr" {
   description = "プライベートサブネット (Redmine 用) の CIDR"
   type        = string
@@ -50,12 +44,6 @@ variable "availability_zone" {
   EOT
   type        = string
   default     = ""
-}
-
-variable "nat_instance_type" {
-  description = "NAT インスタンスのインスタンスタイプ (Graviton / arm64)"
-  type        = string
-  default     = "t4g.nano"
 }
 
 ################################################################################
@@ -81,25 +69,25 @@ variable "data_volume_size" {
 }
 
 variable "redmine_image" {
-  description = "Redmine の Docker イメージ"
+  description = "Redmine の Docker イメージ (ECR Public 上のパス。ECR プルスルーキャッシュ経由で取得)"
   type        = string
-  default     = "redmine:6.0"
+  default     = "docker/library/redmine:6.0"
 }
 
 variable "postgres_image" {
-  description = "PostgreSQL の Docker イメージ"
+  description = "PostgreSQL の Docker イメージ (ECR Public 上のパス。ECR プルスルーキャッシュ経由で取得)"
   type        = string
-  default     = "postgres:16-alpine"
+  default     = "docker/library/postgres:16-alpine"
 }
 
 variable "nginx_image" {
-  description = "リバースプロキシ (nginx) の Docker イメージ"
+  description = "リバースプロキシ (nginx) の Docker イメージ (ECR Public 上のパス。ECR プルスルーキャッシュ経由で取得)"
   type        = string
-  default     = "nginx:1.27-alpine"
+  default     = "docker/library/nginx:1.27-alpine"
 }
 
 variable "docker_compose_version" {
-  description = "インストールする Docker Compose プラグインのバージョン"
+  description = "インストールする Docker Compose プラグインのバージョン (apply 実行端末で GitHub から取得し S3 に配置)"
   type        = string
   default     = "v2.29.7"
 }
