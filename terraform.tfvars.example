@@ -1,0 +1,17 @@
+project = "redmine"
+region  = "ap-northeast-1"
+
+# EC2 サイズ (10 人以下なら t4g.small 推奨)
+instance_type    = "t4g.small"
+data_volume_size = 20
+
+# 独自ドメインを使う場合 (ACM 証明書は us-east-1 で発行)
+# custom_domain       = "redmine.example.com"
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx"
+# route53_zone_id     = "Z0123456789ABCDEFGHIJ"
+
+# 平日 8:00-21:00 のみ稼働させてコスト削減する場合
+# enable_schedule = true
+
+# インターフェイスエンドポイントを自動削除するまでの時間 (分)
+# endpoint_ttl_minutes = 60
