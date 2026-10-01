@@ -120,20 +120,6 @@ variable "cloudfront_price_class" {
   default     = "PriceClass_200"
 }
 
-variable "allowed_ip_cidrs" {
-  description = <<-EOT
-    アクセスを許可する IPv4 CIDR のリスト (CloudFront Functions で制限)。
-    空の場合は全世界からアクセス可能。例: ["203.0.113.0/24"]
-  EOT
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition     = alltrue([for c in var.allowed_ip_cidrs : can(cidrhost(c, 0)) && !strcontains(c, ":")])
-    error_message = "allowed_ip_cidrs には IPv4 CIDR を指定してください。"
-  }
-}
-
 variable "custom_domain" {
   description = "独自ドメイン (例: redmine.example.com)。空の場合は *.cloudfront.net を使用"
   type        = string
@@ -150,22 +136,6 @@ variable "route53_zone_id" {
   description = "独自ドメインの Route 53 ホストゾーン ID。指定すると ALIAS レコードを作成"
   type        = string
   default     = ""
-}
-
-################################################################################
-# バックアップ
-################################################################################
-
-variable "backup_retain_count" {
-  description = "EBS スナップショットの保持世代数 (日次)"
-  type        = number
-  default     = 7
-}
-
-variable "backup_time_utc" {
-  description = "EBS スナップショット取得時刻 (UTC, HH:MM)。DB ダンプはこの 30 分前に実行"
-  type        = string
-  default     = "18:00" # JST 03:00
 }
 
 ################################################################################

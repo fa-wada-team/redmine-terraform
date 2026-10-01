@@ -19,7 +19,7 @@ resource "aws_cloudfront_vpc_origin" "redmine" {
 }
 
 ################################################################################
-# ポリシー / 関数
+# ポリシー
 ################################################################################
 
 data "aws_cloudfront_cache_policy" "disabled" {
@@ -39,18 +39,6 @@ data "aws_cloudfront_response_headers_policy" "security_headers" {
   name = "Managed-SecurityHeadersPolicy"
 }
 
-resource "aws_cloudfront_function" "ip_allowlist" {
-  count = length(var.allowed_ip_cidrs) > 0 ? 1 : 0
-
-  name    = "${var.project}-ip-allowlist"
-  runtime = "cloudfront-js-2.0"
-  comment = "Allow access only from specified IPv4 CIDRs"
-  publish = true
-  code = templatefile("${path.module}/templates/ip_allowlist.js.tftpl", {
-    allowed_cidrs = jsonencode(var.allowed_ip_cidrs)
-  })
-}
-
 ################################################################################
 # ディストリビューション
 ################################################################################
@@ -65,7 +53,7 @@ resource "aws_cloudfront_distribution" "redmine" {
   comment         = "${var.project} Redmine"
   price_class     = var.cloudfront_price_class
   http_version    = "http2and3"
-  is_ipv6_enabled = length(var.allowed_ip_cidrs) == 0 # IP 制限時は IPv4 のみで判定する
+  is_ipv6_enabled = true
   aliases         = local.use_custom_domain ? [var.custom_domain] : []
 
   origin {
@@ -89,14 +77,6 @@ resource "aws_cloudfront_distribution" "redmine" {
     cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer.id
     response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
-
-    dynamic "function_association" {
-      for_each = aws_cloudfront_function.ip_allowlist
-      content {
-        event_type   = "viewer-request"
-        function_arn = function_association.value.arn
-      }
-    }
   }
 
   # 静的アセット (ファイル名にダイジェストを含む) はキャッシュしてオリジン負荷を下げる
@@ -109,14 +89,6 @@ resource "aws_cloudfront_distribution" "redmine" {
     compress                   = true
     cache_policy_id            = data.aws_cloudfront_cache_policy.optimized.id
     response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
-
-    dynamic "function_association" {
-      for_each = aws_cloudfront_function.ip_allowlist
-      content {
-        event_type   = "viewer-request"
-        function_arn = function_association.value.arn
-      }
-    }
   }
 
   restrictions {
@@ -136,11 +108,7 @@ resource "aws_cloudfront_distribution" "redmine" {
 }
 
 resource "aws_route53_record" "redmine" {
-  for_each = (
-    local.use_custom_domain && var.route53_zone_id != ""
-    ? toset(aws_cloudfront_distribution.redmine.is_ipv6_enabled ? ["A", "AAAA"] : ["A"])
-    : toset([])
-  )
+  for_each = local.use_custom_domain && var.route53_zone_id != "" ? toset(["A", "AAAA"]) : toset([])
 
   zone_id = var.route53_zone_id
   name    = var.custom_domain

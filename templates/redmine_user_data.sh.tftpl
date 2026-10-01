@@ -51,7 +51,7 @@ fi
 systemctl daemon-reload
 mount -a
 
-mkdir -p "$DATA_DIR"/{postgres,redmine/files,redmine/plugins,backup}
+mkdir -p "$DATA_DIR"/{postgres,redmine/files,redmine/plugins}
 
 ################################################################################
 # シークレット
@@ -148,45 +148,6 @@ NGINX
 cd "$APP_DIR"
 docker compose pull
 docker compose up -d
-
-################################################################################
-# DB バックアップ (EBS スナップショット取得前に論理ダンプを作成)
-################################################################################
-cat > /usr/local/bin/redmine-db-backup <<'SH'
-#!/bin/bash
-set -euo pipefail
-cd /opt/redmine
-OUT=/data/backup/redmine-$(date +%Y%m%d).sql.gz
-docker compose exec -T db pg_dump -U redmine redmine | gzip > "$OUT.tmp"
-mv "$OUT.tmp" "$OUT"
-find /data/backup -name 'redmine-*.sql.gz' -mtime +7 -delete
-SH
-chmod +x /usr/local/bin/redmine-db-backup
-
-cat > /etc/systemd/system/redmine-db-backup.service <<'UNIT'
-[Unit]
-Description=Redmine DB dump
-After=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/redmine-db-backup
-UNIT
-
-cat > /etc/systemd/system/redmine-db-backup.timer <<'UNIT'
-[Unit]
-Description=Daily Redmine DB dump
-
-[Timer]
-OnCalendar=${dump_calendar_utc}
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-UNIT
-
-systemctl daemon-reload
-systemctl enable --now redmine-db-backup.timer
 
 ################################################################################
 # OS 自動セキュリティ更新 (毎日)

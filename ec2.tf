@@ -68,10 +68,7 @@ resource "aws_ebs_volume" "data" {
   type              = "gp3"
   encrypted         = true
 
-  tags = {
-    Name   = "${var.project}-data"
-    Backup = "${var.project}-daily"
-  }
+  tags = { Name = "${var.project}-data" }
 
   lifecycle {
     prevent_destroy = true
@@ -89,10 +86,6 @@ resource "aws_volume_attachment" "data" {
 ################################################################################
 
 locals {
-  # DB ダンプはスナップショット取得の 30 分前に実行する
-  backup_minutes      = tonumber(split(":", var.backup_time_utc)[0]) * 60 + tonumber(split(":", var.backup_time_utc)[1])
-  dump_minutes        = (local.backup_minutes + 1440 - 30) % 1440
-  dump_calendar_utc   = format("*-*-* %02d:%02d:00 UTC", floor(local.dump_minutes / 60), local.dump_minutes % 60)
   data_volume_devname = "nvme-Amazon_Elastic_Block_Store_${replace(aws_ebs_volume.data.id, "-", "")}"
 }
 
@@ -113,7 +106,6 @@ resource "aws_instance" "redmine" {
     nginx_image            = var.nginx_image
     docker_compose_version = var.docker_compose_version
     upload_max_size_mb     = var.upload_max_size_mb
-    dump_calendar_utc      = local.dump_calendar_utc
   })
   user_data_replace_on_change = false
 
