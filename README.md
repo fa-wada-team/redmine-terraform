@@ -4,6 +4,11 @@ Redmine を AWS に構築する Terraform です。利用者 10 人以下・低�
 
 ## 構成
 
+![構成図](docs/architecture.drawio.svg)
+
+> 構成図は draw.io 形式 (`docs/architecture.drawio.svg`) です。
+> [draw.io](https://app.diagrams.net/) や VS Code の Draw.io Integration 拡張機能でそのまま開いて編集できます。
+
 ```
 インターネット
    │  HTTPS (*.cloudfront.net もしくは独自ドメイン)
@@ -195,3 +200,4 @@ DB と添付ファイルはデータ用 EBS (`/data`) に保存しており、EC
 | `templates/` | EC2 の user_data |
 | `scripts/` | Docker Compose 取得スクリプト (`apply` 時に実行) |
 | `lambda/` | エンドポイント管理 Lambda のコード |
+| `docs/architecture.drawio.svg` | 構成図 (draw.io) |
